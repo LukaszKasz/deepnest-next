@@ -1620,6 +1620,60 @@ ready(async function () {
                     return n.selected;
                 });
             },
+            getUsedWidth: function () {
+                const ne = this.get('nests');
+                const selected = ne.filter(function (n) {
+                    return n.selected;
+                });
+
+                if (selected.length === 0) {
+                    return '0.0';
+                }
+
+                const nest = selected[0];
+                const placements = nest.placements || [];
+                if (placements.length === 0) {
+                    const emptyWidth = 0.0;
+                    console.log("usedWidthFromLeft(mm)=", emptyWidth);
+                    return emptyWidth.toFixed(1);
+                }
+                let maxX = 0;
+
+                placements.forEach(function (sheetPlacement) {
+                    const sheetPart = window.DeepNest.parts[sheetPlacement.sheet];
+                    const sheetBounds = (sheetPart && sheetPart.bounds) ? sheetPart.bounds : { x: 0, y: 0 };
+                    const offsetX = sheetBounds.x || 0;
+                    const offsetY = sheetBounds.y || 0;
+
+                    sheetPlacement.sheetplacements.forEach(function (placement) {
+                        const part = window.DeepNest.parts[placement.source];
+                        if (!part || !part.polygontree || part.polygontree.length === 0) {
+                            return;
+                        }
+
+                        const rotated = GeometryUtil.rotatePolygon(part.polygontree, placement.rotation || 0);
+                        const translated = rotated.map(function (pt) {
+                            return {
+                                x: pt.x + placement.x - offsetX,
+                                y: pt.y + placement.y - offsetY,
+                            };
+                        });
+
+                        const bounds = GeometryUtil.getPolygonBounds(translated);
+                        if (bounds) {
+                            const partMaxX = bounds.x + bounds.width;
+                            if (partMaxX > maxX) {
+                                maxX = partMaxX;
+                            }
+                        }
+                    });
+                });
+
+                const scale = config.getSync('scale') || 1;
+                const usedWidth = maxX * (25.4 / scale);
+                console.log("usedWidthFromLeft(mm)=", usedWidth);
+                return usedWidth.toFixed(1);
+            },
             getNestedPartSources: function (n) {
                 var p = [];
                 for (var i = 0; i < n.placements.length; i++) {

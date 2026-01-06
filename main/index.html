@@ -92,6 +92,7 @@
       <script id="nest-template" type="text/ractive">
         <div id="nestinfo" class='{{ nests.length > 0 ? "active" : "" }}'>
         	<div class="group"><h1>{{ getSelected().length > 0 ? getSelected()[0].placements.length : '-' }}</h1><span class="label">{{ getSelected().length > 0 ? (getSelected()[0].placements.length > 1 ? 'sheets used' : 'sheet used') : '' }}</span></div>
+        	<div class="group"><h1>{{ getUsedWidth() }} mm</h1><span class="label">used width (from left)</span></div>
         	<div class="group"><h1>{{ getPartsPlaced() }}</h1><span class="label">parts placed</span></div>
         	<div class="group"><h1>{{ getUtilisation() }}%</h1><span class="label">sheet utilisation</span></div>
         	<div class="group"><h1>{{ getTimeSaved() }}</h1><span class="label">laser time saved</span></div>
