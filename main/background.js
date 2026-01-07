@@ -168,6 +168,31 @@ window.onload = function () {
       var c = window.db.getStats();
       // console.log('nfp cached:', c);
       // console.log()
+
+      // Prioritize parts if onlyPantsRectangles is enabled (DO NOT FILTER OUT anything)
+      if (data.config.onlyPantsRectangles) {
+        var rectParts = [];
+        var otherParts = [];
+
+        for (let i = 0; i < parts.length; i++) {
+          if (parts[i].pantsPriority === true) {
+            rectParts.push(parts[i]);
+          } else {
+            otherParts.push(parts[i]);
+          }
+        }
+
+        // Keep all parts, just reorder: rectangles first, then the rest
+        parts = rectParts.concat(otherParts);
+
+        console.log(
+          "[onlyPantsRectangles] priority order in background:",
+          "rectangles=", rectParts.length,
+          "others=", otherParts.length,
+          "total=", parts.length
+        );
+      }
+
       ipcRenderer.send('test', [data.sheets, parts, data.config, index]);
       var placement = placeParts(data.sheets, parts, data.config, index);
 
@@ -736,6 +761,9 @@ function placeParts(sheets, parts, config, nestindex) {
     r.id = parts[i].id;
     r.filename = parts[i].filename;
 
+    r.pantsPriority = parts[i].pantsPriority === true;
+    r._pantsOrder = i; // stabilny indeks wejściowy
+
     rotated.push(r);
   }
 
@@ -762,6 +790,28 @@ function placeParts(sheets, parts, config, nestindex) {
   // Combine main parts and hole candidates back into a single array
   // mainParts first since we want to place them first
   parts = [...mainParts, ...holeCandidates];
+
+  // Prioritize parts if onlyPantsRectangles is enabled (stable partition)
+  if (config.onlyPantsRectangles) {
+    const rects = [];
+    const others = [];
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].pantsPriority === true) rects.push(parts[i]);
+      else others.push(parts[i]);
+    }
+
+    // stabilność w obrębie prostokątów (po wejściowym indeksie)
+    rects.sort((a, b) => (a._pantsOrder ?? 0) - (b._pantsOrder ?? 0));
+
+    parts = rects.concat(others);
+
+    console.log(
+      "[onlyPantsRectangles] placeParts() order enforced:",
+      "rects=", rects.length,
+      "others=", others.length,
+      "total=", parts.length
+    );
+  }
 
   // Continue with the original placeParts logic
   // var binarea = Math.abs(GeometryUtil.polygonArea(self.binPolygon));

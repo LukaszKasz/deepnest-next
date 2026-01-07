@@ -1113,7 +1113,6 @@ export class DeepNest {
     var totalNonSheetParts = 0;
     var allRectangles = 0;
     var rectanglesAlongSheetShortAxis = 0;
-    var enabledParts = 0;
 
     // find first sheet for orientation reference
     var sheetPolyForOrientation = null;
@@ -1132,53 +1131,43 @@ export class DeepNest {
     }
 
     for (var i = 0; i < this.parts.length; i++) {
+      // always use normal quantity (no filtering)
       var effectiveQuantity = this.parts[i].quantity;
+      var pantsPriority = false;
 
-      // calculate effectiveQuantity based on onlyPantsRectangles filter
+      // calculate pantsPriority based on onlyPantsRectangles
       if (this.parts[i].sheet === true) {
-        // sheets always use normal quantity
-        effectiveQuantity = this.parts[i].quantity;
+        // sheets never have priority
+        pantsPriority = false;
       } else {
         // count non-sheet parts for debug
         totalNonSheetParts++;
 
         if (config.onlyPantsRectangles === true) {
-          // count all axis-aligned rectangles
+          // check if rectangle is along sheet's short axis (priority condition)
           if (this.isAxisAlignedRectangle(this.parts[i].polygontree) === true) {
             allRectangles++;
             
-            // check if rectangle is along sheet's short axis
             if (sheetPolyForOrientation) {
               if (this.isAxisAlignedRectangleAlongSheetLongAxis(this.parts[i].polygontree, sheetPolyForOrientation) === true) {
-                effectiveQuantity = this.parts[i].quantity;
+                pantsPriority = true;
                 rectanglesAlongSheetShortAxis++;
-              } else {
-                effectiveQuantity = 0;
               }
             } else {
               // fallback: use old logic if no sheet found
               var rb = this.getOuterBounds(this.parts[i].polygontree);
               if (rb && rb.width >= rb.height) {
-                effectiveQuantity = this.parts[i].quantity;
+                pantsPriority = true;
                 rectanglesAlongSheetShortAxis++;
-              } else {
-                effectiveQuantity = 0;
               }
             }
-          } else {
-            effectiveQuantity = 0;
           }
-        } else {
-          effectiveQuantity = this.parts[i].quantity;
         }
-      }
-
-      if (effectiveQuantity > 0) {
-        enabledParts++;
       }
 
       parts.push({
         quantity: effectiveQuantity,
+        pantsPriority: pantsPriority,
         sheet: this.parts[i].sheet,
         polygontree: this.cloneTree(this.parts[i].polygontree),
         filename: this.parts[i].filename,
@@ -1187,15 +1176,7 @@ export class DeepNest {
 
     // debug log
     if (config.onlyPantsRectangles === true) {
-      console.log("[onlyPantsRectangles] sheetShortAxis=" + (sheetShortAxis || 'unknown') + ", rectanglesTotal=" + allRectangles + ", rectanglesAlongSheetShortAxis=" + rectanglesAlongSheetShortAxis + ", enabledParts=" + enabledParts);
-      
-      // warn if no parts to nest (excluding sheets)
-      if (enabledParts === 0 && totalNonSheetParts > 0) {
-        console.warn("Brak prostokątów do nestingu");
-        if (typeof window.message === 'function') {
-          window.message("Brak prostokątów do nestingu");
-        }
-      }
+      console.log("[onlyPantsRectangles] sheetShortAxis=" + (sheetShortAxis || 'unknown') + ", rectanglesTotal=" + allRectangles + ", rectanglesAlongSheetShortAxis=" + rectanglesAlongSheetShortAxis + " (priority parts)");
     }
 
     for (var i = 0; i < parts.length; i++) {
@@ -1386,6 +1367,7 @@ export class DeepNest {
             poly.id = id; // id is the unique id of all parts that will be nested, including cloned duplicates
             poly.source = i; // source is the id of each unique part from the main part list
             poly.filename = parts[i].filename;
+            poly.pantsPriority = !!parts[i].pantsPriority;
 
             adam.push(poly);
             id++;
@@ -1393,8 +1375,11 @@ export class DeepNest {
         }
       }
 
-      // seed with decreasing area
+      // seed: first by pantsPriority (true before false), then by decreasing area
       adam.sort(function (a, b) {
+        if (a.pantsPriority !== b.pantsPriority) {
+          return a.pantsPriority ? -1 : 1;
+        }
         return (
           Math.abs(GeometryUtil.polygonArea(b)) -
           Math.abs(GeometryUtil.polygonArea(a))
@@ -1706,10 +1691,80 @@ export class GeneticAlgorithm {
     }
 
     this.population = [{ placement: adam, rotation: angles }];
+    this.enforcePantsPriority(this.population[0]);
 
     while (this.population.length < config.populationSize) {
       var mutant = this.mutate(this.population[0]);
+      this.enforcePantsPriority(mutant);
       this.population.push(mutant);
+    }
+
+    // control check
+    if (this.config.onlyPantsRectangles === true) {
+      this.checkPantsPriorityOrder();
+    }
+  }
+
+  enforcePantsPriority(individual) {
+    if (this.config.onlyPantsRectangles !== true) {
+      return;
+    }
+
+    // create list of pairs (poly, rot) with indices
+    var pairs = [];
+    for (var i = 0; i < individual.placement.length; i++) {
+      pairs.push({
+        placement: individual.placement[i],
+        rotation: individual.rotation[i],
+        index: i
+      });
+    }
+
+    // stable partition: A = pantsPriority true, B = false
+    var priorityTrue = [];
+    var priorityFalse = [];
+    for (var i = 0; i < pairs.length; i++) {
+      if (pairs[i].placement.pantsPriority === true) {
+        priorityTrue.push(pairs[i]);
+      } else {
+        priorityFalse.push(pairs[i]);
+      }
+    }
+
+    // concatenate A + B
+    var reordered = priorityTrue.concat(priorityFalse);
+
+    // overwrite individual.placement and individual.rotation
+    for (var i = 0; i < reordered.length; i++) {
+      individual.placement[i] = reordered[i].placement;
+      individual.rotation[i] = reordered[i].rotation;
+    }
+  }
+
+  checkPantsPriorityOrder() {
+    var totalPriority = 0;
+    var broken = false;
+
+    for (var i = 0; i < this.population.length; i++) {
+      var ind = this.population[i];
+      var foundFalse = false;
+
+      for (var j = 0; j < ind.placement.length; j++) {
+        if (ind.placement[j].pantsPriority === true) {
+          totalPriority++;
+          if (foundFalse) {
+            broken = true;
+          }
+        } else {
+          foundFalse = true;
+        }
+      }
+    }
+
+    if (broken) {
+      console.warn("pantsPriority order broken");
+    } else {
+      console.log("[onlyPantsRectangles] GA initialized: " + totalPriority + " priority parts, order maintained");
     }
   }
 
@@ -1726,9 +1781,17 @@ export class GeneticAlgorithm {
         var j = i + 1;
 
         if (j < clone.placement.length) {
-          var temp = clone.placement[i];
-          clone.placement[i] = clone.placement[j];
-          clone.placement[j] = temp;
+          // only swap if pantsPriority are the same
+          if (clone.placement[i].pantsPriority === clone.placement[j].pantsPriority) {
+            var temp = clone.placement[i];
+            clone.placement[i] = clone.placement[j];
+            clone.placement[j] = temp;
+
+            // swap rotations too
+            var tempRot = clone.rotation[i];
+            clone.rotation[i] = clone.rotation[j];
+            clone.rotation[j] = tempRot;
+          }
         }
       }
 
@@ -1740,6 +1803,7 @@ export class GeneticAlgorithm {
       }
     }
 
+    this.enforcePantsPriority(clone);
     return clone;
   };
 
@@ -1778,10 +1842,13 @@ export class GeneticAlgorithm {
       return false;
     }
 
-    return [
-      { placement: gene1, rotation: rot1 },
-      { placement: gene2, rotation: rot2 },
-    ];
+    var child1 = { placement: gene1, rotation: rot1 };
+    var child2 = { placement: gene2, rotation: rot2 };
+
+    this.enforcePantsPriority(child1);
+    this.enforcePantsPriority(child2);
+
+    return [child1, child2];
   };
 
   generation() {
