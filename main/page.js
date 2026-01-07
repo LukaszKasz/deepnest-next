@@ -224,6 +224,7 @@ ready(async function () {
         exportWithSheetBoundboarders: false,
         exportWithSheetsSpace: false,
         exportWithSheetsSpaceValue: 0.3937007874015748, // 10mm
+        onlyPantsRectangles: false,
     };
 
     // Removed `electron-settings` while keeping the same interface to minimize changes
@@ -269,7 +270,7 @@ ready(async function () {
                 }
             }
 
-            if (['mergeLines', 'simplify', 'useSvgPreProcessor', 'useQuantityFromFileName', 'exportWithSheetBoundboarders', 'exportWithSheetsSpace'].includes(key)) {
+            if (['mergeLines', 'simplify', 'useSvgPreProcessor', 'useQuantityFromFileName', 'exportWithSheetBoundboarders', 'exportWithSheetsSpace', 'onlyPantsRectangles'].includes(key)) {
                 val = i.checked;
             }
 
@@ -370,7 +371,7 @@ ready(async function () {
             else if (i.getAttribute('data-conversion') == 'true') {
                 i.value = c[i.getAttribute('data-config')] / scale.value;
             }
-            else if (['mergeLines', 'simplify', 'useSvgPreProcessor', 'useQuantityFromFileName', 'exportWithSheetBoundboarders', 'exportWithSheetsSpace'].includes(key)) {
+            else if (['mergeLines', 'simplify', 'useSvgPreProcessor', 'useQuantityFromFileName', 'exportWithSheetBoundboarders', 'exportWithSheetsSpace', 'onlyPantsRectangles'].includes(key)) {
                 i.checked = c[i.getAttribute('data-config')];
             }
             else {

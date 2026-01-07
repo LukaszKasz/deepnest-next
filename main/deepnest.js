@@ -22,6 +22,7 @@ var config = {
   scale: 72,
   simplify: false,
   overlapTolerance: 0.0001,
+  onlyPantsRectangles: false,
 };
 
 export class DeepNest {
@@ -547,6 +548,10 @@ export class DeepNest {
       config.simplify = !!c.simplify;
     }
 
+    if (c.onlyPantsRectangles === true || c.onlyPantsRectangles === false) {
+      config.onlyPantsRectangles = !!c.onlyPantsRectangles;
+    }
+
     var n = Number(c.timeRatio);
     if (typeof n == "number" && !isNaN(n) && isFinite(n)) {
       config.timeRatio = n;
@@ -567,6 +572,103 @@ export class DeepNest {
 
     return config;
   };
+
+  isAxisAlignedRectangle(poly, eps = 1e-6) {
+    if (!poly || poly.length < 4) return false;
+
+    // sklonuj punkty bez children
+    let pts = poly.map(p => ({ x: p.x, y: p.y }));
+
+    // usuń duplikaty sąsiadujące
+    const dist2 = (a, b) => {
+      const dx = a.x - b.x, dy = a.y - b.y;
+      return dx * dx + dy * dy;
+    };
+
+    let cleaned = [];
+    for (let i = 0; i < pts.length; i++) {
+      if (cleaned.length === 0 || dist2(cleaned[cleaned.length - 1], pts[i]) > eps * eps) {
+        cleaned.push(pts[i]);
+      }
+    }
+
+    // usuń punkt domykający (ostatni == pierwszy)
+    if (cleaned.length >= 2 && dist2(cleaned[0], cleaned[cleaned.length - 1]) <= eps * eps) {
+      cleaned.pop();
+    }
+
+    if (cleaned.length < 4) return false;
+
+    // prostokąt osiowy ma dokładnie 2 różne X i 2 różne Y (z tolerancją)
+    const uniq = (arr) => {
+      arr.sort((a, b) => a - b);
+      const out = [];
+      for (const v of arr) {
+        if (out.length === 0 || Math.abs(out[out.length - 1] - v) > eps) out.push(v);
+      }
+      return out;
+    };
+
+    const xs = uniq(cleaned.map(p => p.x));
+    const ys = uniq(cleaned.map(p => p.y));
+    if (xs.length !== 2 || ys.length !== 2) return false;
+
+    // wszystkie wierzchołki muszą leżeć na krawędziach bounding boxa
+    const minx = xs[0], maxx = xs[1], miny = ys[0], maxy = ys[1];
+
+    for (const p of cleaned) {
+      const onX = (Math.abs(p.x - minx) <= eps) || (Math.abs(p.x - maxx) <= eps);
+      const onY = (Math.abs(p.y - miny) <= eps) || (Math.abs(p.y - maxy) <= eps);
+      if (!(onX && onY)) return false;
+    }
+
+    // sprawdź, czy wszystkie krawędzie są poziome albo pionowe
+    for (let i = 0; i < cleaned.length; i++) {
+      const a = cleaned[i];
+      const b = cleaned[(i + 1) % cleaned.length];
+      const dx = Math.abs(a.x - b.x);
+      const dy = Math.abs(a.y - b.y);
+      if (!(dx <= eps || dy <= eps)) return false;
+    }
+
+    return true;
+  }
+
+  getOuterBounds(poly, eps = 1e-6) {
+    if (!poly || poly.length < 2) return null;
+    let pts = poly.map(p => ({ x: p.x, y: p.y }));
+
+    const dist2 = (a, b) => {
+      const dx = a.x - b.x, dy = a.y - b.y;
+      return dx * dx + dy * dy;
+    };
+    if (pts.length >= 2 && dist2(pts[0], pts[pts.length - 1]) <= eps * eps) pts.pop();
+
+    let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+    for (const p of pts) {
+      if (p.x < minx) minx = p.x;
+      if (p.x > maxx) maxx = p.x;
+      if (p.y < miny) miny = p.y;
+      if (p.y > maxy) maxy = p.y;
+    }
+    return { width: maxx - minx, height: maxy - miny };
+  }
+
+  isAxisAlignedRectangleAlongSheetLongAxis(rectPoly, sheetPoly, eps = 1e-6) {
+    if (!this.isAxisAlignedRectangle(rectPoly, eps)) return false;
+
+    const rb = this.getOuterBounds(rectPoly, eps);
+    const sb = this.getOuterBounds(sheetPoly, eps);
+    if (!rb || !sb) return false;
+
+    const sheetShortIsX = sb.width <= sb.height;
+
+    if (sheetShortIsX) {
+      return rb.width >= rb.height;   // krótsza oś arkusza to X, przepuszczaj poziome prostokąty
+    } else {
+      return rb.height >= rb.width;    // krótsza oś arkusza to Y, przepuszczaj pionowe prostokąty
+    }
+  }
 
   pointInPolygon(point, polygon) {
     // scaling is deliberately coarse to filter out points that lie *on* the polygon
@@ -1008,13 +1110,92 @@ export class DeepNest {
     }*/
 
     // send only bare essentials through ipc
+    var totalNonSheetParts = 0;
+    var allRectangles = 0;
+    var rectanglesAlongSheetShortAxis = 0;
+    var enabledParts = 0;
+
+    // find first sheet for orientation reference
+    var sheetPolyForOrientation = null;
+    var sheetShortAxis = null;
+    if (config.onlyPantsRectangles === true) {
+      for (var j = 0; j < this.parts.length; j++) {
+        if (this.parts[j].sheet === true) {
+          sheetPolyForOrientation = this.parts[j].polygontree;
+          var sb = this.getOuterBounds(sheetPolyForOrientation);
+          if (sb) {
+            sheetShortAxis = sb.width <= sb.height ? 'X' : 'Y';
+          }
+          break;
+        }
+      }
+    }
+
     for (var i = 0; i < this.parts.length; i++) {
+      var effectiveQuantity = this.parts[i].quantity;
+
+      // calculate effectiveQuantity based on onlyPantsRectangles filter
+      if (this.parts[i].sheet === true) {
+        // sheets always use normal quantity
+        effectiveQuantity = this.parts[i].quantity;
+      } else {
+        // count non-sheet parts for debug
+        totalNonSheetParts++;
+
+        if (config.onlyPantsRectangles === true) {
+          // count all axis-aligned rectangles
+          if (this.isAxisAlignedRectangle(this.parts[i].polygontree) === true) {
+            allRectangles++;
+            
+            // check if rectangle is along sheet's short axis
+            if (sheetPolyForOrientation) {
+              if (this.isAxisAlignedRectangleAlongSheetLongAxis(this.parts[i].polygontree, sheetPolyForOrientation) === true) {
+                effectiveQuantity = this.parts[i].quantity;
+                rectanglesAlongSheetShortAxis++;
+              } else {
+                effectiveQuantity = 0;
+              }
+            } else {
+              // fallback: use old logic if no sheet found
+              var rb = this.getOuterBounds(this.parts[i].polygontree);
+              if (rb && rb.width >= rb.height) {
+                effectiveQuantity = this.parts[i].quantity;
+                rectanglesAlongSheetShortAxis++;
+              } else {
+                effectiveQuantity = 0;
+              }
+            }
+          } else {
+            effectiveQuantity = 0;
+          }
+        } else {
+          effectiveQuantity = this.parts[i].quantity;
+        }
+      }
+
+      if (effectiveQuantity > 0) {
+        enabledParts++;
+      }
+
       parts.push({
-        quantity: this.parts[i].quantity,
+        quantity: effectiveQuantity,
         sheet: this.parts[i].sheet,
         polygontree: this.cloneTree(this.parts[i].polygontree),
         filename: this.parts[i].filename,
       });
+    }
+
+    // debug log
+    if (config.onlyPantsRectangles === true) {
+      console.log("[onlyPantsRectangles] sheetShortAxis=" + (sheetShortAxis || 'unknown') + ", rectanglesTotal=" + allRectangles + ", rectanglesAlongSheetShortAxis=" + rectanglesAlongSheetShortAxis + ", enabledParts=" + enabledParts);
+      
+      // warn if no parts to nest (excluding sheets)
+      if (enabledParts === 0 && totalNonSheetParts > 0) {
+        console.warn("Brak prostokątów do nestingu");
+        if (typeof window.message === 'function') {
+          window.message("Brak prostokątów do nestingu");
+        }
+      }
     }
 
     for (var i = 0; i < parts.length; i++) {
