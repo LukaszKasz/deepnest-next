@@ -830,6 +830,10 @@ function placeParts(sheets, parts, config, nestindex) {
 
     fitness += sheetarea; // add 1 for each new sheet opened (lower fitness is better)
 
+    // Calculate sheet top Y for pantsPriority tie-breaker
+    const sheetBounds = GeometryUtil.getPolygonBounds(sheet);
+    const sheetTopY = sheetBounds.y + sheetBounds.height;
+
     var clipCache = [];
     //console.log('new sheet');
     for (let i = 0; i < parts.length; i++) {
@@ -1139,6 +1143,7 @@ function placeParts(sheets, parts, config, nestindex) {
       var minarea = null;
       var minx = null;
       var miny = null;
+      var bestGapToTop = null;
       var nf, area, shiftvector;
       var allpoints = [];
       for (let m = 0; m < placed.length; m++) {
@@ -1199,6 +1204,19 @@ function placeParts(sheets, parts, config, nestindex) {
             else {
               area = rectbounds.width * rectbounds.height;
             }
+
+            // Strong top-wall bias for pantsPriority rectangles (not only tie-break)
+            // Smaller gapToTop is better -> add penalty proportional to gap
+            if (config.onlyPantsRectangles && part.pantsPriority === true) {
+              const partTopY = partbounds.y + partbounds.height + shiftvector.y;
+              const gapToTop = sheetTopY - partTopY;
+
+              // weight: must be strong enough to beat small differences in height/area
+              // Use sheet height scale to make it stable across units
+              const pantsTopWeight = sheetBounds.height * 10;
+
+              area += gapToTop * pantsTopWeight;
+            }
           }
           else if (config.placementType == 'convexhull') {
             // Create points for the part at this candidate position
@@ -1247,16 +1265,50 @@ function placeParts(sheets, parts, config, nestindex) {
             area -= merged.totalLength * config.timeRatio;
           }
 
+          // Calculate gap to top for pantsPriority tie-breaker
+          var gapToTop = null;
+          if (part.pantsPriority === true && (config.placementType == 'gravity' || config.placementType == 'box')) {
+            const partTopY = partbounds.y + partbounds.height + shiftvector.y;
+            gapToTop = sheetTopY - partTopY;
+          }
+
           // Check for better placement
-          if (
-            minarea === null ||
-            (config.placementType == 'gravity' && (
-              rectbounds.width < minwidth ||
-              (GeometryUtil.almostEqual(rectbounds.width, minwidth) && area < minarea)
-            )) ||
-            (config.placementType != 'gravity' && area < minarea) ||
-            (GeometryUtil.almostEqual(minarea, area) && shiftvector.x < minx)
-          ) {
+          var isBetter = false;
+          if (minarea === null) {
+            isBetter = true;
+          } else if (config.placementType == 'gravity') {
+            if (rectbounds.width < minwidth) {
+              isBetter = true;
+            } else if (GeometryUtil.almostEqual(rectbounds.width, minwidth) && area < minarea) {
+              isBetter = true;
+            } else if (GeometryUtil.almostEqual(rectbounds.width, minwidth) && GeometryUtil.almostEqual(area, minarea)) {
+              // Tie-breaker for pantsPriority: prefer smaller gap to top
+              if (part.pantsPriority === true && gapToTop !== null && bestGapToTop !== null) {
+                isBetter = gapToTop < bestGapToTop;
+              } else if (part.pantsPriority === true && gapToTop !== null && bestGapToTop === null) {
+                isBetter = true;
+              } else {
+                isBetter = shiftvector.x < minx;
+              }
+            } else if (GeometryUtil.almostEqual(area, minarea)) {
+              isBetter = shiftvector.x < minx;
+            }
+          } else if (config.placementType != 'gravity') {
+            if (area < minarea) {
+              isBetter = true;
+            } else if (GeometryUtil.almostEqual(minarea, area)) {
+              // Tie-breaker for pantsPriority: prefer smaller gap to top
+              if (part.pantsPriority === true && gapToTop !== null && bestGapToTop !== null) {
+                isBetter = gapToTop < bestGapToTop;
+              } else if (part.pantsPriority === true && gapToTop !== null && bestGapToTop === null) {
+                isBetter = true;
+              } else {
+                isBetter = shiftvector.x < minx;
+              }
+            }
+          }
+
+          if (isBetter) {
             // Before accepting this position, perform an overlap check
             var isOverlapping = false;
             // Create a shifted version of the part to test
@@ -1297,6 +1349,9 @@ function placeParts(sheets, parts, config, nestindex) {
               position = shiftvector;
               minx = shiftvector.x;
               miny = shiftvector.y;
+              if (part.pantsPriority === true && gapToTop !== null) {
+                bestGapToTop = gapToTop;
+              }
               if (config.mergeLines) {
                 position.mergedLength = merged.totalLength;
                 position.mergedSegments = merged.segments;
